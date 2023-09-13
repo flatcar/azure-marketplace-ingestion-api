@@ -1,0 +1,24 @@
+[az_storage]
+account_name = "flatcar"
+container_name = "publish"
+blob_name_format = "flatcar-linux-{version}-{plan}-{arch}.vhd"
+
+[offer_metadata]
+flatcar-container-linux-corevm = "arm64"
+flatcar-container-linux-corevm-amd64 = "amd64"
+flatcar-container-linux-free = "amd64"
+flatcar-container-linux = "amd64"
+flatcar_pro = "amd64"
+
+[plan_metadata]
+alpha = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux"]
+beta = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux", "flatcar_pro"]
+stable = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux", "flatcar_pro"]
+lts-2022 = ["flatcar-container-linux-free", "flatcar_pro"]
+
+[test_offer_metadata]
+test-release-automation-corevm = "amd64"
+test-release-automation = "amd64"
+
+[test_plan_metadata]
+release-test-automation = ["test-release-automation-corevm", "test-release-automation"]

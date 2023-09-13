@@ -5,52 +5,23 @@ import json
 import argparse
 import requests
 import logging
+import tomllib
 
 from azure.storage.blob import BlobClient, generate_blob_sas, BlobSasPermissions
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.DEBUG)
 
-PLANS_METADATA = {
-    "flatcar-container-linux-corevm": "arm64",
-    "flatcar-container-linux-corevm-amd64": "amd64",
-    "flatcar-container-linux-free": "amd64",
-    "flatcar-container-linux": "amd64",
-    "flatcar_pro": "amd64",
-}
+with open("config.toml", 'rb') as fobj:
+    toml_data = tomllib.load(fobj)
 
-CHANNELS_METADATA = {
-    "alpha": [
-        "flatcar-container-linux-corevm",
-        "flatcar-container-linux-corevm-amd64" "flatcar-container-linux-free",
-        "flatcar-container-linux",
-    ],
-    "beta": [
-        "flatcar-container-linux-corevm",
-        "flatcar-container-linux-corevm-amd64" "flatcar-container-linux-free",
-        "flatcar-container-linux",
-        "flatcar_pro",
-    ],
-    "stable": [
-        "flatcar-container-linux-corevm",
-        "flatcar-container-linux-corevm-amd64" "flatcar-container-linux-free",
-        "flatcar-container-linux",
-        "flatcar_pro",
-    ],
-    "lts-2022": ["flatcar-container-linux-free", "flatcar_pro"],
-}
+OFFER_METADATA = toml_data.get("offer_metadata")
+if not OFFER_METADATA:
+    logging.error("Missing `offer_metadata` section in config.toml")
 
-TEST_PLANS_METADATA = {
-    "test-release-automation-corevm": "amd64",
-    "test-release-automation": "amd64",
-}
-
-TEST_CHANNEL_METADATA = {
-    "release-test-automation": [
-        "test-release-automation-corevm",
-        "test-release-automation",
-    ]
-}
+PLAN_METADATA = toml_data.get("plan_metadata")
+if not PLAN_METADATA:
+    logging.error("Missing `plan_metadata` section in config.toml")
 
 
 def generate_partner_center_token(tenant_id, client_id, secret_value):
@@ -64,19 +35,32 @@ def generate_partner_center_token(tenant_id, client_id, secret_value):
     return access_token
 
 
-def generate_az_sas_url(channel, version, arch, **kwargs):
+def generate_az_sas_url(plan, version, arch, **kwargs):
     az_storage_key = os.environ.get("AZ_STORAGE_KEY")
     if az_storage_key is None:
         logging.error("missing env: AZ_STORAGE_KEY")
         return
 
-    account_name = "flatcar"
-    container_name = "publish"
+    az_storage = toml_data.get("az_storage")
+    if not az_storage:
+        logging.error("Missing `az_storage` section in config.toml")
 
-    if kwargs.get("test_channel"):
-        channel = kwargs.get("test_channel")
+    account_name = az_storage.get("account_name")
+    if not account_name:
+        logging.error("Missing `account_name` section in config.toml")
 
-    blob_name = f"flatcar-linux-{version}-{channel}-{arch}.vhd"
+    container_name = az_storage.get("container_name")
+    if not container_name:
+        logging.error("Missing `container_name` section in config.toml")
+
+    if kwargs.get("test_plan"):
+        plan = kwargs.get("test_plan")
+
+    blob_name_format = az_storage.get("blob_name_format")
+    if not blob_name_format:
+        logging.error("Missing `container_name` section in config.toml")
+
+    blob_name = blob_name_format.format(version=version, plan=plan, arch=arch)
     sas_query_params = generate_blob_sas(
         account_name=account_name,
         container_name=container_name,
@@ -93,33 +77,31 @@ def generate_az_sas_url(channel, version, arch, **kwargs):
         return None
 
 
-def get_product_durable_id(access_token, plan):
+def get_product_durable_id(access_token, offer):
     resp = requests.get(
-        url=f"https://graph.microsoft.com/rp/product-ingestion/product?externalId={plan}",
+        url=f"https://graph.microsoft.com/rp/product-ingestion/product?externalId={offer}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
 
     return resp.json().get("value", [])[0].get("id")
 
 
-def get_channel_durable_id(access_token, product_durable_id, channel):
+def get_plan_durable_id(access_token, product_durable_id, plan):
     resp = requests.get(
-        url=f"https://graph.microsoft.com/rp/product-ingestion/plan?product={product_durable_id}&externalId={channel}",
+        url=f"https://graph.microsoft.com/rp/product-ingestion/plan?product={product_durable_id}&externalId={plan}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
 
     return resp.json().get("value", [])[0].get("id")
 
 
-def get_image_versions(
-    access_token, product_durable_id, channel_durable_id, corevm=False
-):
+def get_image_versions(access_token, product_durable_id, plan_durable_id, corevm=False):
     endpoint = "virtual-machine-plan-technical-configuration"
     if corevm:
         endpoint = "core-virtual-machine-plan-technical-configuration"
 
     resp = requests.get(
-        url=f"https://graph.microsoft.com/rp/product-ingestion/{endpoint}/{product_durable_id}/{channel_durable_id}",
+        url=f"https://graph.microsoft.com/rp/product-ingestion/{endpoint}/{product_durable_id}/{plan_durable_id}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
 
@@ -128,8 +110,8 @@ def get_image_versions(
 
 def draft_new_image_versions(
     access_token,
-    channel,
     plan,
+    offer,
     version,
     az_sas_url,
     image_versions,
@@ -173,11 +155,11 @@ def draft_new_image_versions(
         "resources": [
             {
                 "$schema": schema_url,
-                "product": {"externalId": f"{plan}"},
-                "plan": {"externalId": f"{channel}"},
+                "product": {"externalId": f"{offer}"},
+                "plan": {"externalId": f"{plan}"},
                 "operatingSystem": {"family": "linux", "type": "other"},
                 "skus": [
-                    {"imageType": f"{image_type_arch}Gen2", "skuId": f"{channel}-gen2"},
+                    {"imageType": f"{image_type_arch}Gen2", "skuId": f"{plan}-gen2"},
                 ],
                 "vmImageVersions": image_versions,
             }
@@ -186,7 +168,7 @@ def draft_new_image_versions(
 
     if image_type_arch != "arm64":
         payload["resources"][0]["skus"].append(
-            {"imageType": f"{image_type_arch}Gen1", "skuId": f"{channel}"}
+            {"imageType": f"{image_type_arch}Gen1", "skuId": f"{plan}"}
         )
 
     if corevm:
@@ -205,27 +187,28 @@ def draft_new_image_versions(
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="flatcar_azure_publisher",
+        prog="azure-marketlace-ingestion-api",
         description="Program to publish the Azure Marketplace Images",
     )
-    parser.add_argument("-c", "--channel")
+    parser.add_argument("-p", "--plan")
     parser.add_argument("-v", "--version")
     parser.add_argument("-s", "--az-sas-url")
     parser.add_argument("-t", "--test-mode", action="store_true")
-    parser.add_argument("-z", "--test-channel")
+    parser.add_argument("-z", "--test-plan")
     args = parser.parse_args()
 
-    if not all((args.channel, args.version)):
-        logging.error("Both version and channel is required")
+    if not all((args.plan, args.version)):
+        logging.error("Both version and plan is required")
         return
 
-    channel = args.channel
-    if not args.test_mode and channel not in ("alpha", "beta", "stable", "lts-2022"):
-        logging.error("channel value should be either alpha, beta, stable or lts-2022")
+    plan = args.plan
+    if not args.test_mode and plan not in ("alpha", "beta", "stable", "lts-2022"):
+        logging.error("plan value should be either alpha, beta, stable or lts-2022")
         return
 
+    test_plan = None
     if args.test_mode:
-        test_channel = args.test_channel
+        test_plan = args.test_plan
 
     version = args.version
     az_sas_url = args.az_sas_url
@@ -242,48 +225,57 @@ def main():
     access_token = generate_partner_center_token(tenant_id, client_id, secret_value)
 
     if args.test_mode:
-        CHANNELS_METADATA = copy.deepcopy(TEST_CHANNEL_METADATA)
-        PLANS_METADATA = copy.deepcopy(TEST_PLANS_METADATA)
+        OFFER_METADATA = toml_data.get("test_offer_metadata")
+        if not OFFER_METADATA:
+            logging.error(
+                "test_mode: Missing `test_offer_metadata` section in config.toml"
+            )
+            return
 
-    for plan in CHANNELS_METADATA.get(channel, []):
+        PLAN_METADATA = toml_data.get("test_plan_metadata")
+        if not PLAN_METADATA:
+            logging.error(
+                "test_mode: Missing `test_plan_metadata` section in config.toml"
+            )
+            return
+
+    for offer in PLAN_METADATA.get(plan, []):
         corevm = False
-        if "corevm" in plan:
+        if "corevm" in offer:
             corevm = True
 
-        arch = PLANS_METADATA.get(plan)
+        arch = OFFER_METADATA.get(offer)
         if arch is None:
             continue
 
         if az_sas_url is None:
-            if test_channel:
-                kwargs = {"test_channel": test_channel}
-            az_sas_url = generate_az_sas_url(channel, version, arch, **kwargs)
+            if test_plan:
+                kwargs = {"test_plan": test_plan}
+            az_sas_url = generate_az_sas_url(plan, version, arch, **kwargs)
             if az_sas_url is None:
                 logging.error(
-                    f"generate_az_sas_url returned None for {channel}, {version}, {arch}"
+                    f"generate_az_sas_url returned None for {plan}, {version}, {arch}"
                 )
                 continue
 
-        product_durable_id = get_product_durable_id(access_token, plan)
-        channel_durable_id = get_channel_durable_id(
-            access_token, product_durable_id, channel
-        )
+        product_durable_id = get_product_durable_id(access_token, offer)
+        plan_durable_id = get_plan_durable_id(access_token, product_durable_id, plan)
 
         product_durable_id = product_durable_id.split("/")[1]
-        channel_durable_id = channel_durable_id.split("/")[2]
+        plan_durable_id = plan_durable_id.split("/")[2]
 
         image_versions = get_image_versions(
-            access_token, product_durable_id, channel_durable_id, corevm=corevm
+            access_token, product_durable_id, plan_durable_id, corevm=corevm
         )
 
         image_type_arch = "x64"
-        if PLANS_METADATA[plan] == "arm64":
+        if OFFER_METADATA[offer] == "arm64":
             image_type_arch = "arm64"
 
         draft_new_image_versions(
             access_token,
-            channel,
             plan,
+            offer,
             version,
             az_sas_url,
             image_versions,
