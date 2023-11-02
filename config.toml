@@ -12,9 +12,10 @@ flatcar_pro = "amd64"
 
 [plan_metadata]
 alpha = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux"]
-beta = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux", "flatcar_pro"]
-stable = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux", "flatcar_pro"]
-lts-2022 = ["flatcar-container-linux-free", "flatcar_pro"]
+beta = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux"]
+stable = ["flatcar-container-linux-corevm", "flatcar-container-linux-corevm-amd64", "flatcar-container-linux-free", "flatcar-container-linux"]
+lts-2022 = ["flatcar-container-linux-free"]
+lts-2023 = ["flatcar-container-linux-free"]
 
 [test_offer_metadata]
 test-release-automation-corevm = "amd64"

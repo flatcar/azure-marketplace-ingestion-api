@@ -7,21 +7,13 @@ import requests
 import logging
 import tomllib
 
-from azure.storage.blob import BlobClient, generate_blob_sas, BlobSasPermissions
+from azure.storage.blob import BlobClient, generate_container_sas, BlobSasPermissions
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.DEBUG)
 
 with open("config.toml", 'rb') as fobj:
     toml_data = tomllib.load(fobj)
-
-OFFER_METADATA = toml_data.get("offer_metadata")
-if not OFFER_METADATA:
-    logging.error("Missing `offer_metadata` section in config.toml")
-
-PLAN_METADATA = toml_data.get("plan_metadata")
-if not PLAN_METADATA:
-    logging.error("Missing `plan_metadata` section in config.toml")
 
 
 def generate_partner_center_token(tenant_id, client_id, secret_value):
@@ -61,11 +53,11 @@ def generate_az_sas_url(plan, version, arch, **kwargs):
         logging.error("Missing `container_name` section in config.toml")
 
     blob_name = blob_name_format.format(version=version, plan=plan, arch=arch)
-    sas_query_params = generate_blob_sas(
+
+    sas_query_params = generate_container_sas(
         account_name=account_name,
-        container_name=container_name,
-        blob_name=blob_name,
         account_key=az_storage_key,
+        container_name=container_name,
         permission="rl",
         start=datetime.utcnow() - timedelta(days=1),
         expiry=datetime.utcnow() + timedelta(weeks=4),
@@ -150,6 +142,10 @@ def draft_new_image_versions(
     if corevm:
         schema_url = "https://product-ingestion.azureedge.net/schema/core-virtual-machine-plan-technical-configuration/2022-03-01-preview5"
 
+    sku_id = f"{plan}-gen2"
+    if image_type_arch == "arm64":
+        sku_id = f"{plan}"
+
     payload = {
         "$schema": "https://product-ingestion.azureedge.net/schema/configure/2022-03-01-preview2",
         "resources": [
@@ -159,9 +155,14 @@ def draft_new_image_versions(
                 "plan": {"externalId": f"{plan}"},
                 "operatingSystem": {"family": "linux", "type": "other"},
                 "skus": [
-                    {"imageType": f"{image_type_arch}Gen2", "skuId": f"{plan}-gen2"},
+                    {"imageType": f"{image_type_arch}Gen2", "skuId": sku_id},
                 ],
                 "vmImageVersions": image_versions,
+                "vmProperties": {
+                    "supportsSriov": True,
+                    "supportsNVMe": True,
+                    "requiresCustomArmTemplate": True
+                }
             }
         ],
     }
@@ -202,8 +203,8 @@ def main():
         return
 
     plan = args.plan
-    if not args.test_mode and plan not in ("alpha", "beta", "stable", "lts-2022"):
-        logging.error("plan value should be either alpha, beta, stable or lts-2022")
+    if not args.test_mode and plan not in ("alpha", "beta", "stable", "lts-2022", "lts-2023"):
+        logging.error("plan value should be either alpha, beta, stable, lts-2023 or lts-2022")
         return
 
     test_plan = None
@@ -211,7 +212,6 @@ def main():
         test_plan = args.test_plan
 
     version = args.version
-    az_sas_url = args.az_sas_url
 
     ## secrets, and other confidential variables
     tenant_id = os.environ.get("AZ_TENANT_ID")
@@ -238,8 +238,20 @@ def main():
                 "test_mode: Missing `test_plan_metadata` section in config.toml"
             )
             return
+    else:
+        OFFER_METADATA = toml_data.get("offer_metadata")
+        if not OFFER_METADATA:
+            logging.error("Missing `offer_metadata` section in config.toml")
+
+        PLAN_METADATA = toml_data.get("plan_metadata")
+        if not PLAN_METADATA:
+            logging.error("Missing `plan_metadata` section in config.toml")
 
     for offer in PLAN_METADATA.get(plan, []):
+        az_sas_url = None
+        if args.az_sas_url is not None:
+            az_sas_url = args.az_sas_url
+
         corevm = False
         if "corevm" in offer:
             corevm = True
@@ -249,6 +261,7 @@ def main():
             continue
 
         if az_sas_url is None:
+            kwargs = {}
             if test_plan:
                 kwargs = {"test_plan": test_plan}
             az_sas_url = generate_az_sas_url(plan, version, arch, **kwargs)
